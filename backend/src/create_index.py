@@ -20,7 +20,7 @@ def create_index():
                     "type": "integer"
                 },
                 "name": {
-                    "type": "text"
+                    "type": "search_as_you_type"
                 },
                 "brand": {
                     "type": "keyword"

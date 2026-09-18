@@ -76,13 +76,30 @@ def search_product(search_text, filters):
     if search_text.strip():
 
         must_queries.append({
-            "multi_match": {
-                "query": search_text,
-                "fields": [
-                    "name^4",
-                    "description"
+            "bool" : {
+                "should" : [
+
+                    # Fuzzy search
+                    {
+                        "multi_match" :{
+                            "query" : search_text,
+                            "fields" : ["name^4","description"],
+                            "fuzziness" : "AUTO"
+                        }
+                    },
+
+                    # Prefix Search
+                    {
+                        "multi_match" : {
+                            "query" : search_text,
+                            "type" : "bool_prefix",
+                            "fields" : [
+                                "name", "name._2gram", "name._3gram"
+                            ]
+                        }
+                    }
                 ],
-                "fuzziness": "AUTO"
+                "minimum_should_match" : 1
             }
         })
 
@@ -386,11 +403,40 @@ def parse_filter(user_demand):
 
     return search_text, filters
 
+def autocomplete(query):
+
+    response = es.search(
+        index=INDEX_NAME,
+        size=10,
+        query={
+            "multi_match": {
+                "query": query,
+                "type": "bool_prefix",
+                "fields": [
+                    "name",
+                    "name._2gram",
+                    "name._3gram"
+                ]
+            }
+        }
+    )
+
+    return response["hits"]["hits"]
 
 # -----MAIN-----
 
 if __name__ == "__main__":
     user_demand = input("Search the Product : \n")
+
+    # Autocomplet
+
+    suggestions = autocomplete(user_demand)
+    print(f"\nSuggestions for '{user_demand}' :\n")
+    for result in suggestions:
+        product = result["_source"]
+        print(product["name"])
+
+    # Normal search
 
     brands = get_brands()
     categories = get_categories()
@@ -426,3 +472,15 @@ if __name__ == "__main__":
             f"Rating: {product['rating']} | "
             f"Stock: {product['stock']}"
         )
+
+# if __name__ == "__main__":
+
+#     query = input("Autocomplete: ")
+
+#     results = autocomplete(query)
+
+#     print(f"\nSuggestions for '{query}':\n")
+
+#     for result in results:
+#         product = result["_source"]
+#         print(product["name"])
