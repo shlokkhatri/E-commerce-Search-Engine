@@ -42,6 +42,12 @@ def create_index():
                 },
                 "stock": { 
                     "type": "integer"
+                },
+                "description_embedding": {
+                    "type": "dense_vector",
+                    "dims": 384,
+                    "index": True,
+                    "similarity": "cosine"
                 }
             }
         }

@@ -1,6 +1,7 @@
 from elasticsearch import Elasticsearch
 import re
 import time
+from generate_embedding import generate_embeddings
 
 ES_url = "http://localhost:9200"
 
@@ -123,6 +124,156 @@ def search_product(search_text, filters):
 
     return response["hits"]["hits"]
 
+def hybrid_search(search_text, filters, original_query=None):
+    print("\nHybrid search")
+
+    # If filters removed all words from search_text,
+    # Use the original user query for simentic/vector search
+    vector_text = original_query if original_query else search_text
+
+    # KEYWORD SEARCH
+    keyword_result = search_product(
+        search_text,
+        filters
+    )
+
+    print(f"\nKeyword Result : {len(keyword_result)}")
+    
+    # VECTOR SEARCH
+    query_embedding = generate_embeddings([vector_text])[0]
+
+    print(f"Query Embedding Dimensions: {len(query_embedding)}")
+
+    # Build the same filter for Vector Search
+    filter_queries = []
+
+    if "brand" in filters:
+        filter_queries.append({
+            "term": {
+                "brand": filters["brand"]
+            }
+        })
+
+    if "category" in filters:
+        filter_queries.append({
+            "term": {
+                "category": filters["category"]
+            }
+        })
+
+    if "min_price" in filters:
+        filter_queries.append({
+            "range": {
+                "price": {
+                    "gte": filters["min_price"]
+                }
+            }
+        })
+
+    if "max_price" in filters:
+        filter_queries.append({
+            "range": {
+                "price": {
+                    "lte": filters["max_price"]
+                }
+            }
+        })
+
+    if "min_rating" in filters:
+        filter_queries.append({
+            "range": {
+                "rating": {
+                    "gte": filters["min_rating"]
+                }
+            }
+        })
+
+    vector_query = {
+        "script_score": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "match_all": {}
+                        }
+                    ],
+                    "filter": filter_queries
+                }
+            },
+            "script": {
+                "source": """
+                    cosineSimilarity(
+                        params.query_vector,
+                        'description_embedding'
+                    ) + 1.0
+                """,
+                "params": {
+                    "query_vector": query_embedding
+                }
+            }
+        }
+    }
+
+    vector_response = es.search(
+        index=INDEX_NAME,
+        size=10,
+        query=vector_query
+    )
+
+    vector_result = vector_response["hits"]["hits"]
+
+    print(f"Vector Result : {len(vector_result)}")
+    
+    # COMBINE KEYWORD + VECTOR RESULTS
+    combined = {}
+
+    # Add keyword results
+    for result in keyword_result:
+
+        product_id = result["_id"]
+
+        combined[product_id] = {
+            "product": result,
+            "keyword_score": result["_score"] or 0,
+            "vector_score": 0
+        }
+
+    # Add vector results
+    for result in vector_result:
+
+        product_id = result["_id"]
+
+        if product_id not in combined:
+
+            combined[product_id] = {
+                "product": result,
+                "keyword_score": 0,
+                "vector_score": result["_score"] or 0
+            }
+
+        else:
+
+            combined[product_id]["vector_score"] = (
+                result["_score"] or 0
+            )
+    
+    # CALCULATE HYBRID SCORE
+    for item in combined.values():
+
+        item["hybrid_score"] = (
+            item["keyword_score"] * 0.5
+            +
+            item["vector_score"] * 0.5
+        )
+    
+    # SORT RESULTS
+    results = sorted(
+        combined.values(),
+        key=lambda x: x["hybrid_score"],
+        reverse=True
+    )
+
+    return results
 
 # GET BRANDS
 
@@ -423,6 +574,28 @@ def autocomplete(query):
 
     return response["hits"]["hits"]
 
+def vector_search(query_text) :
+    query_embedding = generate_embeddings([query_text])[0]
+
+    response = es.search(
+        index = INDEX_NAME,
+        size = 10,
+        query = {
+            "script_score" : {
+                "query" : {
+                    "match_all" : {}
+                },
+                "script" : {
+                    "source" : "cosineSimilarity(params.query_vector, 'description_embedding') + 1.0",
+                    "params" : {
+                        "query_vector" :query_embedding
+                    }
+                }
+            }
+        }
+    )
+    return response ["hits"]["hits"]
+
 # -----MAIN-----
 
 if __name__ == "__main__":
@@ -447,6 +620,7 @@ if __name__ == "__main__":
     print("\nCategories")
     print(categories)
 
+    # Parse filter from user query 
     search_text, filters = parse_filter(user_demand)
 
     print("\nSearch text:")
@@ -455,7 +629,7 @@ if __name__ == "__main__":
     print("\nDetected filters:")
     print(filters)
 
-    results = search_product(
+    results = hybrid_search(     # Hybrid search
         search_text,
         filters
     )
@@ -464,7 +638,7 @@ if __name__ == "__main__":
 
     for result in results:
 
-        product = result["_source"]
+        product = result["product"]["_source"]
 
         print(
             f"{product['name']} | "
@@ -472,15 +646,38 @@ if __name__ == "__main__":
             f"Rating: {product['rating']} | "
             f"Stock: {product['stock']}"
         )
+    print("\nSemantic Search Test")
 
-# if __name__ == "__main__":
+    semantic_query = input(
+        "\nEnter a semantic search query: "
+    )
 
-#     query = input("Autocomplete: ")
+    semantic_results = vector_search(
+        semantic_query
+    )
 
-#     results = autocomplete(query)
+    print("\nSemantic Search Results:\n")
 
-#     print(f"\nSuggestions for '{query}':\n")
+    for result in semantic_results:
 
-#     for result in results:
-#         product = result["_source"]
-#         print(product["name"])
+        product = result["_source"]
+
+        print(
+            f"{product['name']} | "
+            f"Price: ₹{product['price']} | "
+            f"Rating: {product['rating']} | "
+            f"Score: {result['_score']:.4f}"
+        )
+
+    print("\nHybrid Results:\n")
+
+    for item in results:
+
+        product = item["product"]["_source"]
+
+        print(
+            f"{product['name']} | "
+            f"Hybrid Score: {item['hybrid_score']:.4f} | "
+            f"Keyword: {item['keyword_score']:.4f} | "
+            f"Vector: {item['vector_score']:.4f}"
+        )
